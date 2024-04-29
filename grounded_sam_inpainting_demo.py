@@ -1,10 +1,9 @@
 import argparse
 import os
-import copy
 
 import numpy as np
 import torch
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image
 
 # Grounding DINO
 import GroundingDINO.groundingdino.datasets.transforms as T
