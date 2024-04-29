@@ -200,6 +200,9 @@ if __name__ == "__main__":
     mask_pil = Image.fromarray(mask)
     image_pil = Image.fromarray(image)
     
+    # try add controlnet
+
+
     pipe = StableDiffusionInpaintPipeline.from_pretrained(
     "runwayml/stable-diffusion-inpainting", torch_dtype=torch.float16,cache_dir=cache_dir
     )
