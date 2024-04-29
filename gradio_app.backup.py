@@ -371,10 +371,8 @@ if __name__ == "__main__":
             with gr.Column():
                 input_image = gr.Image(source='upload', type="pil", value="assets/demo1.jpg", tool="sketch")
                 task_type = gr.Dropdown(["scribble", "automask", "det", "seg", "inpainting", "automatic"], value="automatic", label="task_type")
-                # text_prompt = gr.Textbox(label="Text Prompt")
-                text_prompt = gr.Dropdown([("Benchtop", "benchtop")], value="Benchtop", label="Change Item")
-                # inpaint_prompt = gr.Textbox(label="Inpaint Prompt")
-                inpaint_prompt = gr.Dropdown([("Black Marble", "black marble, high quality, detailed"), ("Graphite Concrete", "graphite concrete, high quality, detailed")], value="black marble", label="Change To", allow_custom_value=True)
+                text_prompt = gr.Textbox(label="Text Prompt")
+                inpaint_prompt = gr.Textbox(label="Inpaint Prompt")
                 run_button = gr.Button(label="Run")
                 with gr.Accordion("Advanced options", open=False):
                     box_threshold = gr.Slider(
