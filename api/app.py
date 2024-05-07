@@ -1,4 +1,5 @@
 from flask import Flask, request, send_file, send_from_directory
+from flask_cors import CORS
 from PIL import Image
 import io
 
@@ -105,6 +106,7 @@ def show_box(box, ax, label):
 
 
 app = Flask(__name__)
+CORS(app)
 
 config_file = "GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py"
 grounded_checkpoint = "groundingdino_swint_ogc.pth"
@@ -178,8 +180,19 @@ def paint():
         multimask_output = False,
     )
 
+    plt.figure(figsize=(10, 10))
+    plt.imshow(image)
+    for mask in masks:
+        show_mask(mask.cpu().numpy(), plt.gca(), random_color=True)
+    for box, label in zip(boxes_filt, pred_phrases):
+        show_box(box.numpy(), plt.gca(), label)
+    plt.axis('off')
+    t = time.localtime()
+    timestamp = time.strftime('%b-%d-%Y_%H%M', t)
+    plt.savefig(os.path.join("./outputs/masks/mask-" + timestamp + ".jpg"), bbox_inches="tight")
+
     # inpainting pipeline
-    mask = masks[0][0].cpu().numpy() # simply choose the first mask, which will be refine in the future release
+    mask = masks[0][0].cpu().numpy()
     mask_pil = Image.fromarray(mask)
     image_pil = Image.fromarray(image)
 
@@ -197,15 +210,11 @@ def paint():
 
     result = pipe(image=image_pil, mask_image=mask_pil, example_image=example_pil).images[0]
 
-    t = time.localtime()
-    timestamp = time.strftime('%b-%d-%Y_%H%M', t)
-    result.save("./outputs/output-" + timestamp + ".jpg")
-    # Save the output image to a byte stream to send as a response
-    byte_io = io.BytesIO()
-    result.save(byte_io, 'PNG')
-    byte_io.seek(0)
+    
+    filename = "output-" + timestamp + ".jpg"
+    result.save("./outputs/" + filename)
 
-    return send_file(byte_io, mimetype='image/png')
+    return {"filename": filename}, 200
 
 if __name__ == '__main__':
     app.run(debug=True)
