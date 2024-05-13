@@ -133,3 +133,4 @@ dmypy.json
 outputs/
 
 .idea/
+seg_results/
