@@ -257,13 +257,16 @@ def paint():
 
         points = request.form['points']
         points = json.loads(points)
+
+        labels = request.form['labels']
+        labels = json.loads(labels)
         
         input_points = []
 
         for p in points:
             input_points.append([p['x']*img_pil.size[0], p['y']*img_pil.size[1]])
         input_points = np.array(input_points)
-        labels = np.full(len(input_points), 1)
+        labels = np.array(labels)
         print(input_points)
 
         sam_checkpoint = "sam_vit_h_4b8939.pth"
