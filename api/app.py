@@ -1,45 +1,29 @@
-import os
 import json
-import time
 import random
-import torch
-import numpy as np
-import cv2
-import matplotlib.pyplot as plt
-from PIL import Image
-from flask import Flask, request, send_from_directory, abort
+from flask import Flask, request, send_from_directory
 from flask_cors import CORS
+from PIL import Image
 
-# Grounding DINO imports
+import os, time
+
+import numpy as np
+import torch
+from PIL import Image
+
+# Grounding DINO
 import GroundingDINO.groundingdino.datasets.transforms as T
 from GroundingDINO.groundingdino.models import build_model
 from GroundingDINO.groundingdino.util.slconfig import SLConfig
 from GroundingDINO.groundingdino.util.utils import clean_state_dict, get_phrases_from_posmap
 
-# Segment Anything imports
-from segment_anything import build_sam, SamPredictor, sam_model_registry
+# segment anything
+from segment_anything import build_sam, SamPredictor, build_sam_hq
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
 
-# Diffusers import
+# diffusers
 from diffusers import PaintByExamplePipeline
-
-# Constants for directory names
-SEG_RESULTS_DIR = 'seg_results'
-MASKS_DIR = 'outputs/masks'
-OUTPUTS_DIR = 'outputs'
-
-app = Flask(__name__)
-CORS(app)
-
-config_file = "GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py"
-grounded_checkpoint = "groundingdino_swint_ogc.pth"
-sam_checkpoint = "sam_vit_h_4b8939.pth"
-device = "cuda"
-output_dir = "outputs"
-det_prompt = "benchtop"
-box_threshold = 0.3
-text_threshold = 0.25
-# make dir
-os.makedirs(output_dir, exist_ok=True)
 
 
 def load_image(image_path):
@@ -64,7 +48,7 @@ def load_model(model_config_path, model_checkpoint_path, device):
     checkpoint = torch.load(model_checkpoint_path, map_location="cpu")
     load_res = model.load_state_dict(clean_state_dict(checkpoint["model"]), strict=False)
     print(load_res)
-    model.eval()
+    _ = model.eval()
     return model
 
 
@@ -143,6 +127,20 @@ def write_masks_to_png(masks, image, path: str) -> None:
     return
 
 
+
+app = Flask(__name__)
+CORS(app)
+
+config_file = "GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py"
+grounded_checkpoint = "groundingdino_swint_ogc.pth"
+sam_checkpoint = "sam_hq_vit_h.pth"
+device = "cuda"
+output_dir = "outputs"
+det_prompt = "benchtop"
+box_threshold = 0.3
+text_threshold = 0.25
+# make dir
+os.makedirs(output_dir, exist_ok=True)
 # load model
 model = load_model(config_file, grounded_checkpoint, device=device)
 
@@ -151,145 +149,184 @@ def hello():
     return "Hello World!"
 
 @app.route('/file/<name>', methods=['GET'])
-def get_image(name):
-    # Determine the path to the images folder based on the file name
+def getImage(name):
+    # Set the path to the images folder
     if "seg" in name:
-        image_folder = SEG_RESULTS_DIR
+        image_folder = 'seg_results'
     elif "combined" in name:
-        image_folder = MASKS_DIR
+        image_folder = 'outputs/masks'
     else:
-        image_folder = OUTPUTS_DIR
-    
+        image_folder = 'outputs'
     try:
-        # Send the requested file from the specified directory
+        # This will send the requested file from the specified directory
         return send_from_directory(image_folder, name)
     except FileNotFoundError:
-        # Return a detailed error message if the file is not found
-        abort(404, description=f"File '{name}' not found in directory '{image_folder}'")
-
-def process_images(image_file1, image_file2):
-    """Load and process the images."""
-    try:
-        img_pil, img = load_image(image_file1)
-        example_pil, example = load_image(image_file2)
-    except IOError:
-        abort(400, description="Error: Unable to open one of the images.")
-    return img_pil, img, example_pil, example
-
-def save_masked_image(image, masks, boxes_filt, pred_phrases, timestamp):
-    """Save the image with masks and boxes."""
-    plt.figure(figsize=(10, 10))
-    plt.imshow(image)
-    for mask in masks:
-        show_mask(mask.cpu().numpy(), plt.gca(), random_color=True)
-    for box, label in zip(boxes_filt, pred_phrases):
-        show_box(box.numpy(), plt.gca(), label)
-    plt.axis('off')
-    mask_path = os.path.join("./outputs/masks/mask-" + timestamp + ".jpg")
-    plt.savefig(mask_path, bbox_inches="tight")
-    return mask_path
-
-def resize_images(image_pil, mask_pil, example_pil):
-    """Resize images to a standard size."""
-    size = (600, 600 * image_pil.height // image_pil.width // 8 * 8)
-    image_pil = image_pil.resize(size)
-    mask_pil = mask_pil.resize(size)
-    example_pil = example_pil.resize(size)
-    return image_pil, mask_pil, example_pil
-
-def inpaint_image(image_pil, mask_pil, example_pil):
-    """Perform inpainting using the PaintByExamplePipeline."""
-    pipe = PaintByExamplePipeline.from_pretrained(
-        "Fantasy-Studio/Paint-by-Example",
-        torch_dtype=torch.float16,
-    )
-    pipe = pipe.to("cuda")
-    result = pipe(image=image_pil, mask_image=mask_pil, example_image=example_pil).images[0]
-    return result
+        return "File not found", 404
 
 @app.route('/generate', methods=['POST'])
 def paint():
+    # Check if both images are received
     if 'img' not in request.files or 'example' not in request.files:
         return "Missing images", 400
 
     image_file1 = request.files['img']
     image_file2 = request.files['example']
-    
-    img_pil, img, example_pil, example = process_images(image_file1, image_file2)
+
     device = "cuda"
-    timestamp = time.strftime('%b-%d-%Y_%H%M', time.localtime())
+    sam_checkpoint = "sam_hq_vit_h.pth"
 
     if 'points' not in request.form:
+        
+        try:
+            img_pil, img = load_image(image_file1)
+            example_pil, example = load_image(image_file2)
+        except IOError:
+            return "Error: Unable to open one of the images.", 400
+
         boxes_filt, pred_phrases = get_grounding_output(
             model, img, det_prompt, box_threshold, text_threshold, device=device
         )
 
-        predictor = SamPredictor(build_sam(checkpoint="sam_vit_h_4b8939.pth").to(device))
+        # initialize SAM
+        predictor = SamPredictor(build_sam(checkpoint=sam_checkpoint).to(device))
+
         image = np.array(img_pil)
-        image = cv2.cvtColor(image[:, :, ::-1].copy(), cv2.COLOR_BGR2RGB)
+        # Convert RGB to BGR
+        image = image[:, :, ::-1].copy()
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         predictor.set_image(image)
 
         size = img_pil.size
         H, W = size[1], size[0]
-        boxes_filt = boxes_filt * torch.Tensor([W, H, W, H])
-        boxes_filt[:, :2] -= boxes_filt[:, 2:] / 2
-        boxes_filt[:, 2:] += boxes_filt[:, :2]
+        for i in range(boxes_filt.size(0)):
+            boxes_filt[i] = boxes_filt[i] * torch.Tensor([W, H, W, H])
+            boxes_filt[i][:2] -= boxes_filt[i][2:] / 2
+            boxes_filt[i][2:] += boxes_filt[i][:2]
+
         boxes_filt = boxes_filt.cpu()
         transformed_boxes = predictor.transform.apply_boxes_torch(boxes_filt, image.shape[:2]).to(device)
 
         masks, _, _ = predictor.predict_torch(
-            point_coords=None,
-            point_labels=None,
-            boxes=transformed_boxes.to(device),
-            multimask_output=False,
+            point_coords = None,
+            point_labels = None,
+            boxes = transformed_boxes.to(device),
+            multimask_output = False,
         )
 
-        save_masked_image(image, masks, boxes_filt, pred_phrases, timestamp)
+        plt.figure(figsize=(10, 10))
+        plt.imshow(image)
+        for mask in masks:
+            show_mask(mask.cpu().numpy(), plt.gca(), random_color=True)
+        for box, label in zip(boxes_filt, pred_phrases):
+            show_box(box.numpy(), plt.gca(), label)
+        plt.axis('off')
+        t = time.localtime()
+        timestamp = time.strftime('%b-%d-%Y_%H%M', t)
+        plt.savefig(os.path.join("./outputs/masks/mask-" + timestamp + ".jpg"), bbox_inches="tight")
 
+        # inpainting pipeline
         mask = masks[0][0].cpu().numpy()
         mask_pil = Image.fromarray(mask)
-        image_pil, mask_pil, example_pil = resize_images(Image.fromarray(image), mask_pil, example_pil)
+        image_pil = Image.fromarray(image)
 
-        result = inpaint_image(image_pil, mask_pil, example_pil)
+        size = (600, 600*H//W//8*8)
+
+        image_pil = image_pil.resize(size)
+        mask_pil = mask_pil.resize(size)
+        example_pil = example_pil.resize(size)
+
+        pipe = PaintByExamplePipeline.from_pretrained(
+            "Fantasy-Studio/Paint-by-Example",
+            torch_dtype=torch.float16,
+        )
+        pipe = pipe.to("cuda")
+
+        result = pipe(image=image_pil, mask_image=mask_pil, example_image=example_pil).images[0]
+
+        
         filename = "output-" + timestamp + ".jpg"
         result.save("./outputs/" + filename)
 
         return {"filename": filename}, 200
+    else:
+        try:
+            img_pil, img = load_image(image_file1)
+            example_pil, example = load_image(image_file2)
+        except IOError:
+            return "Error: Unable to open one of the images.", 400
 
-    points = json.loads(request.form['points'])
-    labels = json.loads(request.form['labels'])
+        points = request.form['points']
+        points = json.loads(points)
 
-    input_points = np.array([[p['x'] * img_pil.width, p['y'] * img_pil.height] for p in points])
-    labels = np.array(labels)
+        labels = request.form['labels']
+        labels = json.loads(labels)
+        
+        input_points = []
 
-    sam = sam_model_registry["vit_h"](checkpoint="sam_vit_h_4b8939.pth").to(device)
-    predictor = SamPredictor(sam)
+        for p in points:
+            input_points.append([p['x']*img_pil.size[0], p['y']*img_pil.size[1]])
+        input_points = np.array(input_points)
+        labels = np.array(labels)
+        print(input_points)
 
-    image = np.array(img_pil)
-    image = cv2.cvtColor(image[:, :, ::-1].copy(), cv2.COLOR_BGR2RGB)
-    predictor.set_image(image)
+        sam_checkpoint = "sam_hq_vit_h.pth"
+        model_type = "vit_h"
 
-    masks, _, _ = predictor.predict(
-        point_coords=input_points,
-        point_labels=labels,
-        multimask_output=False,
-    )
+        device = "cuda"
 
-    mask = masks[0]
-    mask_pil = Image.fromarray(mask)
-    maskname = "combined-" + timestamp + ".jpg"
-    mask_pil.save("outputs/masks/" + maskname)
-    combined = apply_mask(img_pil, mask_pil)
-    combined.convert("RGB").save("outputs/masks/" + maskname)
+        predictor = SamPredictor(build_sam_hq(checkpoint=sam_checkpoint).to(device))
+        # sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
+        # sam.to(device=device)
 
-    image_pil, mask_pil, example_pil = resize_images(img_pil, mask_pil, example_pil)
+        # predictor = SamPredictor(sam)
 
-    result = inpaint_image(image_pil, mask_pil, example_pil)
-    filename = "output-" + timestamp + ".jpg"
-    result.save("./outputs/" + filename)
+        image = np.array(img_pil)
+        # Convert RGB to BGR
+        image = image[:, :, ::-1].copy()
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        predictor.set_image(image)
 
-    return {"filename": filename, "maskedImg": maskname}, 200
+        masks, _, _ = predictor.predict(
+            point_coords = input_points,
+            point_labels = labels,
+            multimask_output = False,
+        )
 
+        mask = masks[0]
+        mask_pil = Image.fromarray(mask)
+
+        t = time.localtime()
+        timestamp = time.strftime('%b-%d-%Y_%H%M', t)
+        maskname = "combined-"+timestamp+".jpg"
+
+        mask_pil.save("outputs/masks/maskWithPoints.jpg")
+        combined = apply_mask(img_pil, mask_pil)
+        combined = combined.convert("RGB")
+        combined.save("outputs/masks/"+maskname)
+
+        # ----------------start painting--------------------------
+        size = img_pil.size
+        H, W = size[1], size[0]
+
+        size = (600, 600*H//W//8*8)
+
+        image_pil = img_pil.resize(size)
+        mask_pil = mask_pil.resize(size)
+        example_pil = example_pil.resize(size)
+
+        pipe = PaintByExamplePipeline.from_pretrained(
+            "Fantasy-Studio/Paint-by-Example",
+            torch_dtype=torch.float16,
+        )
+        pipe = pipe.to("cuda")
+
+        result = pipe(image=image_pil, mask_image=mask_pil, example_image=example_pil).images[0]
+
+        
+        filename = "output-" + timestamp + ".jpg"
+        result.save("./outputs/" + filename)
+
+        return {"filename": filename, "maskedImg": maskname}, 200
 
 
 def random_color():
