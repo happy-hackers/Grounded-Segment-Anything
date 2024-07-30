@@ -1,14 +1,15 @@
+from io import BytesIO
 import json
 import random
+import uuid
 from flask import Flask, request, send_from_directory
 from flask_cors import CORS
-from PIL import Image
+from PIL import Image, ImageEnhance
 
 import os, time
 
 import numpy as np
 import torch
-from PIL import Image
 
 # Grounding DINO
 import GroundingDINO.groundingdino.datasets.transforms as T
@@ -23,7 +24,16 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # diffusers
-from diffusers import PaintByExamplePipeline
+from diffusers import PaintByExamplePipeline, StableDiffusionControlNetPipeline, ControlNetModel, UniPCMultistepScheduler, StableDiffusionXLControlNetPipeline, AutoencoderKL
+
+from mlsd import model_graph
+
+# using lora + controlnet_depth
+from transformers import pipeline
+from controlnet_aux import MidasDetector, ZoeDetector
+from diffusers import DDIMScheduler, EulerAncestralDiscreteScheduler, DPMSolverMultistepScheduler
+from transformers import DPTFeatureExtractor, DPTForDepthEstimation
+# from diffusers.utils import load_image
 
 
 def load_image(image_path):
@@ -164,6 +174,150 @@ def getImage(name):
         return "File not found", 404
 
 @app.route('/generate', methods=['POST'])
+def lora_sd():
+    # Check if both images are received
+    if 'img' not in request.files or 'example' not in request.files:
+        return "Missing images", 400
+
+    image_file1 = request.files['img']
+    image_file2 = request.files['example']
+
+    depth_estimator = pipeline('depth-estimation')
+
+    lora_path = request.form['lora']
+    print(lora_path)
+    prompt = request.form['prompt']
+
+    negative_prompt = ""
+    if 'negativePrompt' in request.form:
+        negative_prompt = request.form['negativePrompt']
+
+    try:
+        img_pil, img = load_image(image_file1)
+        example_pil, example = load_image(image_file2)
+    except IOError:
+        return "Error: Unable to open one of the images.", 400
+
+    points = request.form['points']
+    points = json.loads(points)
+
+    labels = request.form['labels']
+    labels = json.loads(labels)
+    
+    input_points = []
+
+    for p in points:
+        input_points.append([p['x']*img_pil.size[0], p['y']*img_pil.size[1]])
+    input_points = np.array(input_points)
+    labels = np.array(labels)
+    print(input_points)
+
+    sam_checkpoint = "sam_hq_vit_h.pth"
+
+    device = "cuda"
+
+    predictor = SamPredictor(build_sam_hq(checkpoint=sam_checkpoint).to(device))
+
+    image = np.array(img_pil)
+
+    image = image[:, :, ::-1].copy()
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    predictor.set_image(image)
+
+    masks, _, _ = predictor.predict(
+        point_coords = input_points,
+        point_labels = labels,
+        multimask_output = False,
+    )
+
+    mask = masks[0]
+    mask_pil = Image.fromarray(mask)
+
+    t = time.localtime()
+    timestamp = time.strftime('%b-%d-%Y_%H%M', t)
+    maskname = "combined-"+timestamp+".jpg"
+
+    mask_pil.save("outputs/masks/maskWithPoints.jpg")
+    combined = apply_mask(img_pil, mask_pil)
+    combined = combined.convert("RGB")
+    combined.save("outputs/masks/"+maskname)
+
+    # ----------------start painting--------------------------
+    size = img_pil.size
+    H, W = size[1], size[0]
+
+    size = (600, 600*H//W//8*8)
+
+    image_pil = img_pil.resize(size)
+    mask_pil = mask_pil.resize(size)
+    example_pil = example_pil.resize(size)
+
+
+    depth_image = depth_estimator(image_pil)['depth']
+    depth_image = np.array(depth_image)
+    depth_image = depth_image[:, :, None]
+    depth_image = np.concatenate([depth_image, depth_image, depth_image], axis=2)
+    depth_image = Image.fromarray(depth_image)
+    H, W = depth_image.size[1], depth_image.size[0]
+    size = (600, 600*H//W//8*8)
+
+    depth_image = depth_image.resize(size)
+
+    depth_image.save("lora+depth-outs/depth-" + timestamp + ".png")
+
+    # controlnet = ControlNetModel.from_pretrained(
+    #     "lllyasviel/sd-controlnet-depth", torch_dtype=torch.float16, device=device
+    # ).to(device)
+    print(torch.cuda.is_available())
+
+    controlnet = ControlNetModel.from_single_file(
+        "/home/jupyter/stable-diffusion-webui/extensions/sd-webui-controlnet/models/control_sd15_depth.pth", torch_dtype=torch.float16
+    ).to(device)
+
+    pipe = StableDiffusionControlNetPipeline.from_pretrained(
+        "SG161222/Realistic_Vision_V2.0", controlnet=controlnet, torch_dtype=torch.float16
+    ).to(device)
+
+    # pipe = StableDiffusionControlNetPipeline.from_single_file(
+    #     "/home/jupyter/stable-diffusion-webui/models/Stable-diffusion/realisticvision.safetensors", num_in_channels=9, controlnet=controlnet, torch_dtype=torch.float16
+    # ).to(device)
+
+    # pipe = StableDiffusionControlNetPipeline.from_single_file("/home/jupyter/stable-diffusion-webui/models/Stable-diffusion/realisticvision.safetensors", controlnet=controlnet, num_in_channels=4)
+
+    pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config, use_karras_sigmas=True)
+
+    pipe.load_lora_weights(lora_path)
+
+    pipe.enable_model_cpu_offload()
+
+    result = pipe(prompt, depth_image, negative_prompt=negative_prompt, guidance_scale=7, num_inference_steps=20).images[0]
+
+    result.save("./outputs/lora-"+timestamp+".png")
+
+    # mask_path = "/home/jupyter/Grounded-Segment-Anything/assets/stone/masks/black-benchtop-mask.png"
+    # mask = Image.open(mask_path).convert("RGB")
+    # mask = mask.resize(size)
+    # enhancer = ImageEnhance.Brightness(result)
+    # result = enhancer.enhance(1.1)
+    # gray1 = image_pil.convert('L')
+    # gray2 = result.convert('L')
+    # mean1 = np.mean(np.array(gray1))
+    # mean2 = np.mean(np.array(gray2))
+
+    # adjustment_factor = mean1 / mean2
+    # print(adjustment_factor)
+    # enhancer = ImageEnhance.Brightness(result)
+    # result = enhancer.enhance(adjustment_factor)
+
+    mask_pil = mask_pil.convert("L")
+    result = Image.composite(result, image_pil, mask_pil)
+
+    filename = "output-" + timestamp + ".png"
+    result.save("./outputs/" + filename)
+
+    return {"filename": filename}, 200
+
+@app.route('/generate-archive', methods=['POST'])
 def paint():
     # Check if both images are received
     if 'img' not in request.files or 'example' not in request.files:

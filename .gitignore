@@ -134,3 +134,11 @@ outputs/
 
 .idea/
 seg_results/
+mlsd_outputs/
+static/
+test_inputs/
+tflite_models/
+assets/
+*.jpg
+*.png
+*.jpeg
