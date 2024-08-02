@@ -1,10 +1,8 @@
-from io import BytesIO
 import json
 import random
-import uuid
 from flask import Flask, request, send_from_directory
 from flask_cors import CORS
-from PIL import Image, ImageEnhance
+from PIL import Image
 
 import os, time
 
@@ -24,17 +22,55 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # diffusers
-from diffusers import PaintByExamplePipeline, StableDiffusionControlNetPipeline, ControlNetModel, UniPCMultistepScheduler, StableDiffusionXLControlNetPipeline, AutoencoderKL
+from diffusers import PaintByExamplePipeline, StableDiffusionControlNetPipeline, ControlNetModel
 
-from mlsd import model_graph
 
 # using lora + controlnet_depth
 from transformers import pipeline
-from controlnet_aux import MidasDetector, ZoeDetector
-from diffusers import DDIMScheduler, EulerAncestralDiscreteScheduler, DPMSolverMultistepScheduler
-from transformers import DPTFeatureExtractor, DPTForDepthEstimation
+from diffusers import DPMSolverMultistepScheduler
 # from diffusers.utils import load_image
 
+from datetime import datetime
+import urllib.request
+import base64
+import json
+import time
+import os
+
+webui_server_url = 'http://127.0.0.1:7860'
+
+def timestamp():
+    return datetime.fromtimestamp(time.time()).strftime("%Y%m%d-%H%M%S")
+
+
+def encode_file_to_base64(path):
+    with open(path, 'rb') as file:
+        return base64.b64encode(file.read()).decode('utf-8')
+
+
+def decode_and_save_base64(base64_str, save_path):
+    with open(save_path, "wb") as file:
+        file.write(base64.b64decode(base64_str))
+
+
+def call_api(api_endpoint, **payload):
+    data = json.dumps(payload).encode('utf-8')
+    request = urllib.request.Request(
+        f'{webui_server_url}/{api_endpoint}',
+        headers={'Content-Type': 'application/json'},
+        data=data,
+    )
+    response = urllib.request.urlopen(request)
+    return json.loads(response.read().decode('utf-8'))
+
+
+def call_txt2img_api(**payload):
+    response = call_api('sdapi/v1/txt2img', **payload)
+    t = timestamp()
+    for index, image in enumerate(response.get('images')):
+        save_path = os.path.join("outputs", f'lora-{t}-{index}.png')
+        decode_and_save_base64(image, save_path)
+    return "outputs/lora-" + t + "-0.png"
 
 def load_image(image_path):
     # load image
@@ -174,13 +210,116 @@ def getImage(name):
         return "File not found", 404
 
 @app.route('/generate', methods=['POST'])
-def lora_sd():
-    # Check if both images are received
-    if 'img' not in request.files or 'example' not in request.files:
+def generate_with_webui_api():
+    payload = {"alwayson_scripts": {"API payload": {"args": []}, "Comments": {"args": []}, "ControlNet": {"args": [{"advanced_weighting": None, "animatediff_batch": False, "batch_image_files": [], "batch_images": "", "batch_keyframe_idx": None, "batch_mask_dir": None, "batch_modifiers": [], "control_mode": "Balanced", "effective_region_mask": None, "enabled": True, "guidance_end": 1.0, "guidance_start": 0.0, "hr_option": "Both", "image": {"image": encode_file_to_base64(r"/home/jupyter/Grounded-Segment-Anything/assets/stone/black-benchtop.jpeg"), "mask": None}, "inpaint_crop_input_image": False, "input_mode": "simple", "ipadapter_input": None, "is_ui": True, "loopback": False, "low_vram": False, "mask": None, "model": "control_sd15_depth [fef5e48e]", "module": "depth_midas", "output_dir": "", "pixel_perfect": False, "processor_res": 512, "pulid_mode": "Fidelity", "resize_mode": "Just Resize", "save_detected_map": True, "threshold_a": 0.5, "threshold_b": 0.5, "union_control_type": "Depth", "weight": 1.0}, {"advanced_weighting": None, "animatediff_batch": False, "batch_image_files": [], "batch_images": "", "batch_keyframe_idx": None, "batch_mask_dir": None, "batch_modifiers": [], "control_mode": "Balanced", "effective_region_mask": None, "enabled": False, "guidance_end": 1.0, "guidance_start": 0.0, "hr_option": "Both", "image": None, "inpaint_crop_input_image": False, "input_mode": "simple", "ipadapter_input": None, "is_ui": True, "loopback": False, "low_vram": False, "mask": None, "model": "None", "module": "none", "output_dir": "", "pixel_perfect": False, "processor_res": -1, "pulid_mode": "Fidelity", "resize_mode": "Crop and Resize", "save_detected_map": True, "threshold_a": -1.0, "threshold_b": -1.0, "union_control_type": "Unknown", "weight": 1.0}, {"advanced_weighting": None, "animatediff_batch": False, "batch_image_files": [], "batch_images": "", "batch_keyframe_idx": None, "batch_mask_dir": None, "batch_modifiers": [], "control_mode": "Balanced", "effective_region_mask": None, "enabled": False, "guidance_end": 1.0, "guidance_start": 0.0, "hr_option": "Both", "image": None, "inpaint_crop_input_image": False, "input_mode": "simple", "ipadapter_input": None, "is_ui": True, "loopback": False, "low_vram": False, "mask": None, "model": "None", "module": "none", "output_dir": "", "pixel_perfect": False, "processor_res": -1, "pulid_mode": "Fidelity", "resize_mode": "Crop and Resize", "save_detected_map": True, "threshold_a": -1.0, "threshold_b": -1.0, "union_control_type": "Unknown", "weight": 1.0}]}, "Extra options": {"args": []}, "Hypertile": {"args": []}, "Refiner": {"args": [False, "", 0.8]}, "Sampler": {"args": [20, "DPM++ 2M", "Automatic"]}, "Seed": {"args": [-1, False, -1, 0, 0, 0]}, "VRAM Usage Estimator": {"args": [""]}}, "batch_size": 3, "cfg_scale": 7, "comments": {}, "denoising_strength": 0.7, "disable_extra_networks": False, "do_not_save_grid": False, "do_not_save_samples": False, "enable_hr": False, "height": 800, "hr_negative_prompt": "", "hr_prompt": "", "hr_resize_x": 0, "hr_resize_y": 0, "hr_scale": 2, "hr_second_pass_steps": 0, "hr_upscaler": "Latent", "n_iter": 1, "negative_prompt": "white countertop", "override_settings": {}, "override_settings_restore_afterwards": True, "prompt": " <lora:black-marble-counter:1>, a kitchen with a black marble countertop", "restore_faces": False, "s_churn": 0.0, "s_min_uncond": 0.0, "s_noise": 1.0, "s_tmax": None, "s_tmin": 0.0, "sampler_name": "DPM++ 2M", "scheduler": "Automatic", "script_args": [], "script_name": None, "seed": -1, "seed_enable_extras": True, "seed_resize_from_h": -1, "seed_resize_from_w": -1, "steps": 20, "styles": [], "subseed": -1, "subseed_strength": 0, "tiling": False, "width": 600}
+    
+    if 'img' not in request.files:
         return "Missing images", 400
 
     image_file1 = request.files['img']
-    image_file2 = request.files['example']
+
+    lora_path = request.form['lora']
+    print(lora_path)
+    prompt = request.form['prompt']
+
+    negative_prompt = ""
+    if 'negativePrompt' in request.form:
+        negative_prompt = request.form['negativePrompt']
+
+    try:
+        img_pil, img = load_image(image_file1)
+    except IOError:
+        return "Error: Unable to open one of the images.", 400
+
+    input_path = "outputs/input-" + timestamp() + ".png"
+    img_pil.save(input_path)
+    points = request.form['points']
+    points = json.loads(points)
+
+    labels = request.form['labels']
+    labels = json.loads(labels)
+    
+    input_points = []
+
+    for p in points:
+        input_points.append([p['x']*img_pil.size[0], p['y']*img_pil.size[1]])
+    input_points = np.array(input_points)
+    labels = np.array(labels)
+    print(input_points)
+
+    # ----------------start painting--------------------------
+    size = img_pil.size
+    H, W = size[1], size[0]
+
+    size = (800, 800*H//W//8*8)
+
+    image_pil = img_pil.resize(size)
+    H, W = image_pil.size[1], image_pil.size[0]
+    
+
+    payload["height"] = H
+    payload["width"] = W
+    payload["prompt"] = prompt + ", <lora:" + lora_path.split("/").pop().split('.')[0] + ":1>"
+    print(payload["prompt"])
+    payload["negative_prompt"] = negative_prompt
+    payload["alwayson_scripts"]["ControlNet"]["args"][0]["image"]["image"] = encode_file_to_base64(input_path)
+    lora_output_path = call_txt2img_api(**payload)
+
+    sam_checkpoint = "sam_hq_vit_h.pth"
+
+    device = "cuda"
+
+    predictor = SamPredictor(build_sam_hq(checkpoint=sam_checkpoint).to(device))
+
+    image = np.array(img_pil)
+
+    image = image[:, :, ::-1].copy()
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    predictor.set_image(image)
+
+    masks, _, _ = predictor.predict(
+        point_coords = input_points,
+        point_labels = labels,
+        multimask_output = False,
+    )
+
+    mask = masks[0]
+    mask_pil = Image.fromarray(mask)
+
+    
+    maskname = "combined-"+timestamp()+".jpg"
+
+    mask_pil.save("outputs/masks/maskWithPoints.jpg")
+    combined = apply_mask(img_pil, mask_pil)
+    combined = combined.convert("RGB")
+    combined.save("outputs/masks/"+maskname)
+
+    mask_pil = mask_pil.resize(size)
+    mask_pil = mask_pil.convert("L")
+
+    filename = "output-" + timestamp()
+    for i in range(3):
+        path = lora_output_path[:-5] + str(i) + lora_output_path[-4:]
+        temp = Image.open(path).convert("RGB")
+        temp = Image.composite(temp, image_pil, mask_pil)
+        temp.save("./outputs/" + filename + "-" + str(i) + ".png")
+
+    # result = Image.open(lora_output_path).convert("RGB")
+    
+    # result = Image.composite(result, image_pil, mask_pil)
+
+    # filename = "output-" + timestamp() + ".png"
+    # result.save("./outputs/" + filename)
+
+    return {"filename": filename}, 200
+
+@app.route('/generate-diffusers', methods=['POST'])
+def lora_sd():
+    # Check if both images are received
+    if 'img' not in request.files:
+        return "Missing images", 400
+
+    image_file1 = request.files['img']
 
     depth_estimator = pipeline('depth-estimation')
 
@@ -194,7 +333,6 @@ def lora_sd():
 
     try:
         img_pil, img = load_image(image_file1)
-        example_pil, example = load_image(image_file2)
     except IOError:
         return "Error: Unable to open one of the images.", 400
 
@@ -250,7 +388,6 @@ def lora_sd():
 
     image_pil = img_pil.resize(size)
     mask_pil = mask_pil.resize(size)
-    example_pil = example_pil.resize(size)
 
 
     depth_image = depth_estimator(image_pil)['depth']
@@ -290,9 +427,12 @@ def lora_sd():
 
     pipe.enable_model_cpu_offload()
 
-    result = pipe(prompt, depth_image, negative_prompt=negative_prompt, guidance_scale=7, num_inference_steps=20).images[0]
+    res = pipe(prompt, depth_image, negative_prompt=negative_prompt, guidance_scale=7, num_images_per_prompt=3, num_inference_steps=20).images
 
+    result = res[0]
     result.save("./outputs/lora-"+timestamp+".png")
+    res[1].save("./outputs/lora-"+timestamp+"-1.png")
+    res[2].save("./outputs/lora-"+timestamp+"-2.png")
 
     # mask_path = "/home/jupyter/Grounded-Segment-Anything/assets/stone/masks/black-benchtop-mask.png"
     # mask = Image.open(mask_path).convert("RGB")
